@@ -86,6 +86,10 @@ export function setup(ctx: SpindleFrontendContext) {
   let currentMatches: RegexMatch[] = []
   let currentMatchIndex = -1
 
+  // Field expansion state
+  let fieldsExpanded = localStorage.getItem('regex-studio-fields-expanded') === 'true'
+  let autoOpenedFieldId: string | null = null
+
   // Undo / Redo History Stack
   let historyStack: FieldItem[][] = [[]]
   let historyIndex = 0
@@ -101,12 +105,26 @@ export function setup(ctx: SpindleFrontendContext) {
     iconSvg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>`,
   })
 
+  // Keep the drawer tab itself bounded so the editor can own its internal scroll area.
+  tab.root.style.height = '100%'
+  tab.root.style.minHeight = '0'
+  tab.root.style.overflow = 'hidden'
+
   // ── Styles ──
   const removeStyle = ctx.dom.addStyle(`
     /* CSS: Main Regex Studio wrapper; vertical layout, spacing, padding, and base text styling. */
-    .rs-container { display: flex; flex-direction: column; gap: 10px; padding: 12px; font-size: 13px; color: var(--lumiverse-text); }
+    .rs-container { display: flex; flex-direction: column; gap: 10px; padding: 12px; font-size: 13px; color: var(--lumiverse-text); height: 100%; min-height: 0; overflow: hidden; box-sizing: border-box; }
     /* CSS: Generic horizontal flex row used throughout the UI; wraps on narrow screens. */
     .rs-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    /* CSS: Keep the editor workspace fixed while only the field list scrolls. */
+    #rs-view-editor { overflow: hidden; min-height: 0; height: 0; flex: 1 1 auto; }
+    /* CSS: Keep the regex controls and action toolbar visible above the scrolling fields. */
+    #rs-regex-card { flex-shrink: 0; }
+    #rs-view-editor > .rs-row, #rs-view-editor > .rs-settings-details, #rs-view-editor > .rs-action-toolbar { flex-shrink: 0; }
+    .rs-action-toolbar { flex-shrink: 0; flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; }
+    .rs-action-toolbar .rs-btn { flex-shrink: 0; }
+    .rs-action-toolbar::-webkit-scrollbar { display: none; }
+    .rs-action-toolbar { scrollbar-width: none; }
     /* CSS: Small bold heading used for labels such as "Source:". */
     .rs-header-title { font-weight: 600; font-size: 13.5px; }
     /* CSS: Shared appearance for text inputs and select controls. */
@@ -133,8 +151,8 @@ export function setup(ctx: SpindleFrontendContext) {
     
     /* CSS: Shared bordered panel/card container. */
     .rs-card { background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-    /* CSS: Scrollable stack of editable character/lorebook text fields. */
-    .rs-fields-list { display: flex; flex-direction: column; gap: 12px; max-height: 60vh; overflow-y: auto; padding-right: 2px; }
+    /* CSS: Scrollable stack of editable character/lorebook text fields; fills remaining editor space. */
+    .rs-fields-list { display: flex; flex-direction: column; gap: 12px; flex: 1 1 0; min-height: 0; height: 0; max-height: none; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding-right: 2px; }
     
     /* CSS: Individual editable-field panel containing a field header and textarea. */
     .rs-field-box { background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; }
@@ -156,6 +174,16 @@ export function setup(ctx: SpindleFrontendContext) {
     .rs-color-swatch::-webkit-color-swatch-wrapper { padding: 0; }
     /* CSS: Makes the native WebKit color swatch fill the circular picker cleanly. */
     .rs-color-swatch::-webkit-color-swatch { border: none; border-radius: 50%; }
+
+    /* CSS: Collapsible settings group containing tag filters, source selection, and field selection. */
+    .rs-settings-details { border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); background: var(--lumiverse-fill); overflow: hidden; flex-shrink: 0; }
+    /* CSS: Compact summary row used to open/close the settings group. */
+    .rs-settings-summary { padding: 7px 10px; cursor: pointer; user-select: none; font-size: 12px; font-weight: 600; color: var(--lumiverse-text); list-style: none; display: flex; align-items: center; gap: 7px; }
+    .rs-settings-summary::-webkit-details-marker { display: none; }
+    .rs-settings-summary::before { content: '▶'; color: var(--lumiverse-accent); font-size: 10px; }
+    .rs-settings-details[open] > .rs-settings-summary::before { content: '▼'; }
+    /* CSS: Interior spacing for the controls revealed by the settings dropdown. */
+    .rs-settings-content { display: flex; flex-direction: column; gap: 10px; padding: 10px; border-top: 1px solid var(--lumiverse-border); }
 
     /* CSS: Container for the Editor / Pipelines & Presets navigation tabs. */
     .rs-nav-tabs { display: flex; border-bottom: 1px solid var(--lumiverse-border); margin-bottom: 4px; }
@@ -179,7 +207,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
       <!-- HTML: TAB VIEW 1 — complete editor workspace. -->
       <!-- CSS: inline flex-column layout stacks source, filters, regex controls, and fields. -->
-      <div id="rs-view-editor" style="display: flex; flex-direction: column; gap: 10px;">
+      <div id="rs-view-editor" style="display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0;">
         <!-- HTML: Source-mode toolbar; chooses what kind of content Regex Studio edits. -->
         <div class="rs-row">
           <!-- HTML: Source label. -->
@@ -194,49 +222,58 @@ export function setup(ctx: SpindleFrontendContext) {
           <button class="rs-btn" id="rs-mode-custom">Custom Text</button>
         </div>
 
-        <!-- HTML: Tag filter panel; shown for character and character-batch modes. -->
-        <div id="rs-tag-filters-section" class="rs-card">
-          <!-- HTML/CSS: Section title for include/exclude character-tag filtering. -->
-          <div style="font-weight: 500; font-size: 11.5px;">Tag Filters:</div>
-          <!-- HTML: Mount point populated by tag-filter.ts with the two multi-select controls. -->
-          <div id="rs-tag-controls-slot"></div>
-        </div>
+        <!-- HTML: Collapsible settings dropdown containing tag filters, source selection, and field selection. -->
+        <details class="rs-settings-details">
+          <summary class="rs-settings-summary">Character &amp; Field Settings</summary>
+          <div class="rs-settings-content">
+            <!-- HTML: Tag filter panel; shown for character and character-batch modes. -->
+            <div id="rs-tag-filters-section" class="rs-card">
+              <!-- HTML/CSS: Section title for include/exclude character-tag filtering. -->
+              <div style="font-weight: 500; font-size: 11.5px;">Tag Filters:</div>
+              <!-- HTML: Mount point populated by tag-filter.ts with the two multi-select controls. -->
+              <div id="rs-tag-controls-slot"></div>
+            </div>
 
-        <!-- HTML: Content-selection area; receives either a single-select or multi-select control. -->
-        <div id="rs-selector-section" class="rs-row" style="align-items: stretch;">
-          <!-- HTML/CSS: Mount point for the current character/lorebook selector or batch multi-select. -->
-          <div id="rs-select-slot" style="flex: 1; min-width: 200px;"></div>
-          <!-- HTML: Batch-only action that selects every currently filtered character. -->
-          <button class="rs-btn" id="rs-select-all-btn" style="display: none;">Select All</button>
-          <!-- HTML: Batch-only action that clears all selected characters. -->
-          <button class="rs-btn" id="rs-deselect-all-btn" style="display: none;">Deselect All</button>
-          <!-- HTML: Reloads the available characters/lorebooks from the backend. -->
-          <button class="rs-btn" id="rs-refresh-btn">Refresh</button>
-        </div>
+            <!-- HTML: Content-selection area; receives either a single-select or multi-select control. -->
+            <div id="rs-selector-section" class="rs-row" style="align-items: stretch;">
+              <!-- HTML/CSS: Mount point for the current character/lorebook selector or batch multi-select. -->
+              <div id="rs-select-slot" style="flex: 1; min-width: 200px;"></div>
+              <!-- HTML: Batch-only action that selects every currently filtered character. -->
+              <button class="rs-btn" id="rs-select-all-btn" style="display: none;">Select All</button>
+              <!-- HTML: Batch-only action that clears all selected characters. -->
+              <button class="rs-btn" id="rs-deselect-all-btn" style="display: none;">Deselect All</button>
+              <!-- HTML: Reloads the available characters/lorebooks from the backend. -->
+              <button class="rs-btn" id="rs-refresh-btn">Refresh</button>
+            </div>
 
-        <!-- HTML: Field-filter panel; controls which character fields are loaded into the editor. -->
-        <div id="rs-fields-filter" class="rs-card">
-          <!-- HTML/CSS: Label explaining that the chips control editable character fields. -->
-          <div style="font-weight: 500; font-size: 11.5px;">Include Fields in Editor:</div>
-          <!-- HTML: Dynamic mount point where one chip is created for each CHAR_FIELDS definition. -->
-          <div class="rs-row" id="rs-chips-container"></div>
-        </div>
+            <!-- HTML: Field-filter panel; controls which character fields are loaded into the editor. -->
+            <div id="rs-fields-filter" class="rs-card">
+              <!-- HTML/CSS: Label explaining that the chips control editable character fields. -->
+              <div style="font-weight: 500; font-size: 11.5px;">Include Fields in Editor:</div>
+              <!-- HTML: Dynamic mount point where one chip is created for each CHAR_FIELDS definition. -->
+              <div class="rs-row" id="rs-chips-container"></div>
+            </div>
+          </div>
+        </details>
 
         <!-- HTML: Main editing action toolbar for history, copying, resetting, and saving. -->
-        <div class="rs-row" style="justify-content: space-between;">
-          <div class="rs-row">
-            <!-- HTML: Undo/redo history controls. -->
-            <button class="rs-btn" id="rs-undo-btn" title="Undo change" disabled>↶ Undo</button>
-            <button class="rs-btn" id="rs-redo-btn" title="Redo change" disabled>↷ Redo</button>
-          </div>
-          <div class="rs-row">
-            <!-- HTML: Copies all current field contents to the clipboard. -->
-            <button class="rs-btn" id="rs-copy-btn">Copy All</button>
-            <!-- HTML: Restores the selected source data back into the editor. -->
-            <button class="rs-btn" id="rs-reset-btn">Reset All</button>
-            <!-- HTML: Persists the current edits through the backend. -->
-            <button class="rs-btn rs-btn-primary" id="rs-save-btn">Save Changes</button>
-          </div>
+        <!-- HTML: Compact single-row action toolbar; kept fixed above the scrolling field list. -->
+        <div class="rs-row rs-action-toolbar">
+          <!-- HTML: Undo/redo history controls. -->
+          <button class="rs-btn" id="rs-undo-btn" title="Undo change" disabled>↶ Undo</button>
+          <button class="rs-btn" id="rs-redo-btn" title="Redo change" disabled>↷ Redo</button>
+
+          <!-- HTML: Opens or closes all editor fields. -->
+          <button class="rs-btn" id="rs-toggle-fields-btn" title="Open or close all fields">
+            ${fieldsExpanded ? 'Close All' : 'Open All'}
+          </button>
+
+          <!-- HTML: Copies all current field contents to the clipboard. -->
+          <button class="rs-btn" id="rs-copy-btn">Copy All</button>
+          <!-- HTML: Restores the selected source data back into the editor. -->
+          <button class="rs-btn" id="rs-reset-btn">Reset All</button>
+          <!-- HTML: Persists the current edits through the backend. -->
+          <button class="rs-btn rs-btn-primary" id="rs-save-btn">Save Changes</button>
         </div>
 
         <!-- HTML: Regex/pipeline execution panel. This is the control center for single-regex replacement or preset execution. -->
@@ -363,6 +400,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
   const undoBtn = tab.root.querySelector('#rs-undo-btn') as HTMLButtonElement
   const redoBtn = tab.root.querySelector('#rs-redo-btn') as HTMLButtonElement
+  const toggleFieldsBtn = tab.root.querySelector('#rs-toggle-fields-btn') as HTMLButtonElement
   const copyBtn = tab.root.querySelector('#rs-copy-btn') as HTMLButtonElement
   const resetBtn = tab.root.querySelector('#rs-reset-btn') as HTMLButtonElement
   const saveBtn = tab.root.querySelector('#rs-save-btn') as HTMLButtonElement
@@ -575,6 +613,32 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   })
 
+  function updateAllFieldsOpenState() {
+    fieldsContainer.querySelectorAll('.rs-field-textarea').forEach((element) => {
+      const textarea = element as HTMLTextAreaElement
+      textarea.style.display = fieldsExpanded ? 'block' : 'none'
+
+      const box = textarea.parentElement
+      const header = box?.querySelector('.rs-field-header') as HTMLElement | null
+      const labelSpan = header?.querySelector('span') as HTMLElement | null
+
+      if (header) {
+        header.style.borderBottom = fieldsExpanded
+          ? '1px solid var(--lumiverse-border)'
+          : 'none'
+      }
+
+      if (labelSpan) {
+        const field = fields.find((f) => f.id === textarea.dataset.fieldId)
+        if (field) {
+          labelSpan.textContent = `${fieldsExpanded ? '▼' : '▶'} ${field.label}`
+        }
+      }
+    })
+
+    toggleFieldsBtn.textContent = fieldsExpanded ? 'Close All' : 'Open All'
+  }
+
   // ── DOM Multi-Field Rendering ──
   function renderFieldsDOM() {
     fieldsContainer.innerHTML = ''
@@ -599,7 +663,7 @@ export function setup(ctx: SpindleFrontendContext) {
       const header = document.createElement('div')
       header.className = 'rs-field-header'
       header.innerHTML = `
-        <span>▶ ${field.label}</span>
+        <span>${fieldsExpanded ? '▼' : '▶'} ${field.label}</span>
         ${field.sublabel ? `<span class="rs-field-sub">${field.sublabel}</span>` : ''}
       `
 
@@ -610,7 +674,7 @@ export function setup(ctx: SpindleFrontendContext) {
       textarea.value = field.value
       textarea.dataset.fieldId = field.id
       textarea.placeholder = `Enter content here...`
-      textarea.style.display = 'none'
+      textarea.style.display = fieldsExpanded ? 'block' : 'none'
 
       textarea.oninput = () => {
         field.value = textarea.value
@@ -622,20 +686,21 @@ export function setup(ctx: SpindleFrontendContext) {
         }, 600)
       }
 
-    header.addEventListener('click', () => {
-      const isOpen = textarea.style.display !== 'none'
+      header.addEventListener('click', () => {
+        const isOpen = textarea.style.display !== 'none'
+        const nextOpen = !isOpen
 
-      textarea.style.display = isOpen ? 'none' : 'block'
+        textarea.style.display = nextOpen ? 'block' : 'none'
 
-      const labelSpan = header.querySelector('span')
-      if (labelSpan) {
-      labelSpan.textContent = `${isOpen ? '▶' : '▼'} ${field.label}`
-     }
+        const labelSpan = header.querySelector('span')
+        if (labelSpan) {
+          labelSpan.textContent = `${nextOpen ? '▼' : '▶'} ${field.label}`
+        }
 
-      header.style.borderBottom = isOpen
-        ? '1px solid var(--lumiverse-border)'
-        : 'none'
-    })
+        header.style.borderBottom = nextOpen
+          ? '1px solid var(--lumiverse-border)'
+          : 'none'
+      })
 
       box.appendChild(header)
       box.appendChild(textarea)
@@ -671,7 +736,7 @@ export function setup(ctx: SpindleFrontendContext) {
             id: `alt_greeting_${idx}`,
             key: 'alternate_greetings',
             label: `Alternate Greeting ${idx + 1}`,
-            value: greeting || '',
+            value: (greeting || '').replace(/\r\n/g, '\n'),
           })
         })
       } else {
@@ -679,7 +744,7 @@ export function setup(ctx: SpindleFrontendContext) {
           id: f.key,
           key: f.key,
           label: f.label,
-          value: selectedChar[f.key] || '',
+          value: (selectedChar[f.key] || '').replace(/\r\n/g, '\n'),
         })
       }
     }
@@ -701,7 +766,7 @@ export function setup(ctx: SpindleFrontendContext) {
       key: 'entry',
       label: entry.comment || `Entry ${idx + 1}`,
       sublabel: `ID: ${entry.id}`,
-      value: entry.content || '',
+      value: (entry.content || '').replace(/\r\n/g, '\n'),
     }))
 
     renderFieldsDOM()
@@ -798,13 +863,138 @@ export function setup(ctx: SpindleFrontendContext) {
 
   function highlightCurrentMatch() {
     if (currentMatchIndex < 0 || currentMatchIndex >= currentMatches.length) return
+
     const match = currentMatches[currentMatchIndex]
-    const textarea = fieldsContainer.querySelector(`[data-field-id="${match.fieldId}"]`) as HTMLTextAreaElement | null
-    if (textarea) {
-      textarea.focus()
-      textarea.setSelectionRange(match.startIndex, match.startIndex + match.length)
-      textarea.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+
+    // If all fields are normally open, leave them that way.
+    // Otherwise, automatically open the field containing the match.
+    if (!fieldsExpanded) {
+      if (autoOpenedFieldId && autoOpenedFieldId !== match.fieldId) {
+        const previousTextarea = fieldsContainer.querySelector(
+          `[data-field-id="${autoOpenedFieldId}"]`
+        ) as HTMLTextAreaElement | null
+
+        if (previousTextarea) {
+          previousTextarea.style.display = 'none'
+
+          const previousHeader = previousTextarea.parentElement?.querySelector(
+            '.rs-field-header'
+          ) as HTMLElement | null
+
+          const previousLabel = previousHeader?.querySelector('span') as HTMLElement | null
+
+          if (previousLabel) {
+            const previousField = fields.find((f) => f.id === autoOpenedFieldId)
+            if (previousField) {
+              previousLabel.textContent = `▶ ${previousField.label}`
+            }
+          }
+
+          if (previousHeader) {
+            previousHeader.style.borderBottom = 'none'
+          }
+        }
+
+        autoOpenedFieldId = null
+      }
+
+      const targetTextarea = fieldsContainer.querySelector(
+        `[data-field-id="${match.fieldId}"]`
+      ) as HTMLTextAreaElement | null
+
+      if (targetTextarea && targetTextarea.style.display === 'none') {
+        targetTextarea.style.display = 'block'
+
+        const targetHeader = targetTextarea.parentElement?.querySelector(
+          '.rs-field-header'
+        ) as HTMLElement | null
+
+        const targetLabel = targetHeader?.querySelector('span') as HTMLElement | null
+
+        if (targetLabel) {
+          const targetField = fields.find((f) => f.id === match.fieldId)
+          if (targetField) {
+            targetLabel.textContent = `▼ ${targetField.label}`
+          }
+        }
+
+        if (targetHeader) {
+          targetHeader.style.borderBottom = '1px solid var(--lumiverse-border)'
+        }
+
+        autoOpenedFieldId = match.fieldId
+      }
     }
+
+    const textarea = fieldsContainer.querySelector(
+      `[data-field-id="${match.fieldId}"]`
+    ) as HTMLTextAreaElement | null
+
+    if (!textarea) return
+
+    // Bring the field itself into the visible field-scroll area first.
+    textarea.scrollIntoView({
+      block: 'nearest',
+      behavior: 'smooth',
+    })
+
+    textarea.focus()
+    textarea.setSelectionRange(
+      match.startIndex,
+      match.startIndex + match.length
+    )
+
+    // Browsers do not consistently scroll a textarea's internal content when
+    // a selection is changed programmatically. Build a temporary, invisible
+    // text mirror with the same wrapping/font metrics so we can determine the
+    // vertical position of the selected match and set scrollTop explicitly.
+    const mirror = document.createElement('div')
+    const marker = document.createElement('span')
+    const style = window.getComputedStyle(textarea)
+
+    mirror.style.cssText = `
+      position: fixed;
+      left: -100000px;
+      top: 0;
+      width: ${textarea.clientWidth}px;
+      box-sizing: border-box;
+      padding: ${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft};
+      font-family: ${style.fontFamily};
+      font-size: ${style.fontSize};
+      font-weight: ${style.fontWeight};
+      font-style: ${style.fontStyle};
+      line-height: ${style.lineHeight};
+      letter-spacing: ${style.letterSpacing};
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+      word-break: ${style.wordBreak};
+      visibility: hidden;
+      pointer-events: none;
+    `
+
+    mirror.appendChild(document.createTextNode(
+      textarea.value.slice(0, match.startIndex)
+    ))
+    marker.textContent = textarea.value.slice(
+      match.startIndex,
+      match.startIndex + match.length
+    ) || ' '
+    mirror.appendChild(marker)
+    document.body.appendChild(mirror)
+
+    const targetTop = marker.offsetTop
+    const targetCenter = targetTop + marker.offsetHeight / 2
+    const desiredScrollTop = Math.max(
+      0,
+      targetCenter - textarea.clientHeight / 2
+    )
+
+    textarea.scrollTop = Math.min(
+      desiredScrollTop,
+      Math.max(0, textarea.scrollHeight - textarea.clientHeight)
+    )
+
+    mirror.remove()
   }
 
   function nextMatch() {
@@ -1012,6 +1202,13 @@ export function setup(ctx: SpindleFrontendContext) {
   undoBtn.onclick = () => undo()
   redoBtn.onclick = () => redo()
 
+  toggleFieldsBtn.onclick = () => {
+    fieldsExpanded = !fieldsExpanded
+    localStorage.setItem('regex-studio-fields-expanded', String(fieldsExpanded))
+    autoOpenedFieldId = null
+    updateAllFieldsOpenState()
+  }
+  
   nextMatchBtn.onclick = () => nextMatch()
   prevMatchBtn.onclick = () => prevMatch()
   replaceOneBtn.onclick = () => replaceSingleMatch()

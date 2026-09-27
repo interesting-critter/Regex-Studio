@@ -37,7 +37,7 @@ export function buildBatchCharacterFields(
             key: 'alternate_greetings',
             label: `${char.name} — Alt Greeting ${idx + 1}`,
             sublabel: `Card: ${char.name}`,
-            value: greeting || '',
+            value: (greeting || '').replace(/\r\n/g, '\n'),
           })
         })
       } else {
@@ -48,7 +48,7 @@ export function buildBatchCharacterFields(
           key: f.key,
           label: `${char.name} — ${f.label}`,
           sublabel: `Card: ${char.name}`,
-          value: char[f.key] || '',
+          value: (char[f.key] || '').replace(/\r\n/g, '\n'),
         })
       }
     })
