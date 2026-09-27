@@ -133,16 +133,17 @@ export function setup(ctx: SpindleFrontendContext) {
     /* CSS: Focus state for inputs/selects; highlights the active control with the accent color. */
     .rs-input:focus { border-color: var(--lumiverse-accent); }
     /* CSS: Base button style used for normal actions throughout Regex Studio. */
-    .rs-btn { background: var(--lumiverse-fill-subtle); color: var(--lumiverse-text); border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); padding: 5px 10px; font-size: 12px; cursor: pointer; transition: background 0.15s; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; }
+    .rs-btn { background: var(--lumiverse-fill-subtle); color: var(--lumiverse-text); border: 1px solid var(--lumiverse-border) !important; border-radius: var(--lumiverse-radius); padding: 5px 10px; font-size: 12px; cursor: pointer; transition: background 0.15s; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; }
     /* CSS: Hover state for enabled buttons. */
     .rs-btn:hover:not(:disabled) { background: var(--lumiverse-border); }
     /* CSS: Disabled-button state; dims the button and prevents normal pointer interaction. */
     .rs-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     /* CSS: Primary-action button style for the currently emphasized action. */
-    .rs-btn-primary { background: var(--lumiverse-accent); color: var(--lumiverse-accent-fg, #fff); border: 1px solid var(--lumiverse-accent); }
+    .rs-container .rs-btn.rs-btn-primary { background: var(--lumiverse-accent); color: var(--lumiverse-accent-fg, #fff); border: 1px solid var(--lumiverse-accent) !important; }
     /* CSS: Slightly dims a primary button on hover. */
     .rs-btn-primary:hover:not(:disabled) { opacity: 0.9; }
-    .rs-save-dirty { border: 2px solid var(--lumiverse-accent) !important; box-shadow: 0 0 0 2px var(--lumiverse-accent); }
+    /* CSS: Makes unsaved Save Changes state unmistakable even if host styles override button borders. */
+    .rs-container #rs-save-btn.rs-save-dirty { border: 2px solid var(--lumiverse-accent) !important; outline: 2px solid var(--lumiverse-accent) !important; outline-offset: 1px; box-shadow: 0 0 0 2px var(--lumiverse-accent) !important; }
     
     /* CSS: Pill/chip control used for field filters, regex mode, and regex flags. */
     .rs-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 11px; background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); border-radius: 12px; cursor: pointer; user-select: none; font-weight: 500; }
@@ -1377,4 +1378,3 @@ export function setup(ctx: SpindleFrontendContext) {
     tab.destroy()
   }
 }
-
