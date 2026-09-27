@@ -118,7 +118,7 @@ export function setup(ctx: SpindleFrontendContext) {
     /* CSS: Generic horizontal flex row used throughout the UI; wraps on narrow screens. */
     .rs-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     /* CSS: Keep the editor workspace fixed while only the field list scrolls. */
-    #rs-view-editor { overflow: hidden; min-height: 0; height: 0; flex: 1 1 auto; }
+    #rs-view-editor { overflow: hidden; min-height: 0; height: 0; flex: 1 1 auto; }\n    #rs-view-pipelines { overflow: hidden; min-height: 0; height: 0; flex: 1 1 auto; display: flex; flex-direction: column; }
     /* CSS: Keep the regex controls and action toolbar visible above the scrolling fields. */
     #rs-regex-card { flex-shrink: 0; }
     #rs-view-editor > .rs-row, #rs-view-editor > .rs-settings-details, #rs-view-editor > .rs-action-toolbar { flex-shrink: 0; }
@@ -142,7 +142,7 @@ export function setup(ctx: SpindleFrontendContext) {
     .rs-btn-primary { background: var(--lumiverse-accent); color: var(--lumiverse-accent-fg, #fff); border: 1px solid var(--lumiverse-accent); }
     /* CSS: Slightly dims a primary button on hover. */
     .rs-btn-primary:hover:not(:disabled) { opacity: 0.9; }
-    .rs-save-dirty { box-shadow: 0 0 0 2px var(--lumiverse-accent); }
+    .rs-save-dirty { border: 2px solid var(--lumiverse-accent) !important; box-shadow: 0 0 0 2px var(--lumiverse-accent); }
     
     /* CSS: Pill/chip control used for field filters, regex mode, and regex flags. */
     .rs-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 11px; background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); border-radius: 12px; cursor: pointer; user-select: none; font-weight: 500; }
@@ -1377,3 +1377,4 @@ export function setup(ctx: SpindleFrontendContext) {
     tab.destroy()
   }
 }
+

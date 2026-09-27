@@ -80,7 +80,7 @@ export class PipelineManagerUI {
     this.container.innerHTML = `
       <!-- HTML: Pipeline editor root; vertical layout that contains the entire preset editor. -->
       <!-- CSS: flex-column stacks the preset controls, metadata, steps, and footer with 10px gaps. -->
-      <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div style="display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0;">
         <!-- HTML: Top control row containing preset selection/creation on the left and save/delete on the right. -->
         <!-- CSS: rs-row provides horizontal flex layout; space-between separates the two control groups. -->
         <div class="rs-row" style="justify-content: space-between;">
@@ -121,7 +121,7 @@ export class PipelineManagerUI {
         </div>
 
         <!-- HTML: Scrollable container where individual regex-step cards are rendered dynamically. -->
-        <div id="rs-pipe-steps-container" style="display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 0; max-height: 70vh; overflow-y: auto; padding-right: 2px;"></div>
+        <div id="rs-pipe-steps-container" style="display: flex; flex-direction: column; gap: 10px; flex: 1 1 0; min-height: 0; max-height: none; overflow-y: auto; padding-right: 2px;"></div>
 
         <!-- HTML: Footer containing the add-step action; hidden until a preset is active. -->
         <div id="rs-pipe-footer" style="display: none;" class="rs-row">
@@ -381,3 +381,4 @@ export class PipelineManagerUI {
 function escapeHtml(str: string): string {
   return str.replace(/"/g, '&quot;')
 }
+
