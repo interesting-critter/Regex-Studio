@@ -1,6 +1,6 @@
 {
   "name": "regex-studio",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "type": "module",
   "scripts": {
     "build:backend": "bun build src/backend.ts --outfile dist/backend.js --target bun",
