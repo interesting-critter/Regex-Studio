@@ -736,7 +736,7 @@ export function setup(ctx: SpindleFrontendContext) {
             id: `alt_greeting_${idx}`,
             key: 'alternate_greetings',
             label: `Alternate Greeting ${idx + 1}`,
-            value: greeting || '',
+            value: (greeting || '').replace(/\r\n/g, '\n'),
           })
         })
       } else {
@@ -744,7 +744,7 @@ export function setup(ctx: SpindleFrontendContext) {
           id: f.key,
           key: f.key,
           label: f.label,
-          value: selectedChar[f.key] || '',
+          value: (selectedChar[f.key] || '').replace(/\r\n/g, '\n'),
         })
       }
     }
@@ -766,7 +766,7 @@ export function setup(ctx: SpindleFrontendContext) {
       key: 'entry',
       label: entry.comment || `Entry ${idx + 1}`,
       sublabel: `ID: ${entry.id}`,
-      value: entry.content || '',
+      value: (entry.content || '').replace(/\r\n/g, '\n'),
     }))
 
     renderFieldsDOM()
@@ -932,21 +932,69 @@ export function setup(ctx: SpindleFrontendContext) {
 
     if (!textarea) return
 
-    textarea.setSelectionRange(
-      match.startIndex,
-      match.startIndex + match.length
-    )
-
+    // Bring the field itself into the visible field-scroll area first.
     textarea.scrollIntoView({
       block: 'nearest',
       behavior: 'smooth',
     })
 
-    textarea.focus({ preventScroll: true })
+    textarea.focus()
     textarea.setSelectionRange(
       match.startIndex,
       match.startIndex + match.length
     )
+
+    // Browsers do not consistently scroll a textarea's internal content when
+    // a selection is changed programmatically. Build a temporary, invisible
+    // text mirror with the same wrapping/font metrics so we can determine the
+    // vertical position of the selected match and set scrollTop explicitly.
+    const mirror = document.createElement('div')
+    const marker = document.createElement('span')
+    const style = window.getComputedStyle(textarea)
+
+    mirror.style.cssText = `
+      position: fixed;
+      left: -100000px;
+      top: 0;
+      width: ${textarea.clientWidth}px;
+      box-sizing: border-box;
+      padding: ${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft};
+      font-family: ${style.fontFamily};
+      font-size: ${style.fontSize};
+      font-weight: ${style.fontWeight};
+      font-style: ${style.fontStyle};
+      line-height: ${style.lineHeight};
+      letter-spacing: ${style.letterSpacing};
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+      word-break: ${style.wordBreak};
+      visibility: hidden;
+      pointer-events: none;
+    `
+
+    mirror.appendChild(document.createTextNode(
+      textarea.value.slice(0, match.startIndex)
+    ))
+    marker.textContent = textarea.value.slice(
+      match.startIndex,
+      match.startIndex + match.length
+    ) || ' '
+    mirror.appendChild(marker)
+    document.body.appendChild(mirror)
+
+    const targetTop = marker.offsetTop
+    const targetCenter = targetTop + marker.offsetHeight / 2
+    const desiredScrollTop = Math.max(
+      0,
+      targetCenter - textarea.clientHeight / 2
+    )
+
+    textarea.scrollTop = Math.min(
+      desiredScrollTop,
+      Math.max(0, textarea.scrollHeight - textarea.clientHeight)
+    )
+
+    mirror.remove()
   }
 
   function nextMatch() {

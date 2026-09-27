@@ -17,17 +17,33 @@ function escapeHtml(str: string): string {
     .replace(/"/g, '&quot;')
 }
 
+interface DiffResult {
+  html: string
+  additions: number
+  removals: number
+}
+
 /**
- * Lightweight word-level token diff engine
+ * Lightweight word-level token diff engine.
+ *
+ * Words are kept together, while punctuation/symbols are tokenized one
+ * character at a time. This is important for regex edits such as removing
+ * `*` next to `{{user}}`: the `*` is then shown as the only removal instead
+ * of grouping it together with the neighboring braces.
  */
-function computeWordDiffHtml(oldStr: string, newStr: string): string {
-  const tokenize = (s: string) => s.match(/[\w']+|[^\w\s]+|\s+/g) || []
+function computeWordDiff(oldStr: string, newStr: string): DiffResult {
+  const tokenize = (s: string) =>
+    s.match(/[\w']+|[^\w\s]|\s+/g) || []
+
   const oldTokens = tokenize(oldStr)
   const newTokens = tokenize(newStr)
 
   const N = oldTokens.length
   const M = newTokens.length
-  const dp: number[][] = Array.from({ length: N + 1 }, () => new Array(M + 1).fill(0))
+  const dp: number[][] = Array.from(
+    { length: N + 1 },
+    () => new Array(M + 1).fill(0)
+  )
 
   for (let i = N - 1; i >= 0; i--) {
     for (let j = M - 1; j >= 0; j--) {
@@ -42,6 +58,18 @@ function computeWordDiffHtml(oldStr: string, newStr: string): string {
   let i = 0
   let j = 0
   let html = ''
+  let additions = 0
+  let removals = 0
+
+  const addRemoval = (token: string) => {
+    removals += token.length
+    html += `<del style="background: rgba(239, 68, 68, 0.25); color: #f87171; text-decoration: line-through; border-radius: 2px; padding: 0 2px;">${escapeHtml(token)}</del>`
+  }
+
+  const addAddition = (token: string) => {
+    additions += token.length
+    html += `<ins style="background: rgba(34, 197, 94, 0.25); color: #4ade80; text-decoration: none; border-radius: 2px; padding: 0 2px; font-weight: 500;">${escapeHtml(token)}</ins>`
+  }
 
   while (i < N && j < M) {
     if (oldTokens[i] === newTokens[j]) {
@@ -49,24 +77,25 @@ function computeWordDiffHtml(oldStr: string, newStr: string): string {
       i++
       j++
     } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      html += `<del style="background: rgba(239, 68, 68, 0.25); color: #f87171; text-decoration: line-through; border-radius: 2px; padding: 0 2px;">${escapeHtml(oldTokens[i])}</del>`
+      addRemoval(oldTokens[i])
       i++
     } else {
-      html += `<ins style="background: rgba(34, 197, 94, 0.25); color: #4ade80; text-decoration: none; border-radius: 2px; padding: 0 2px; font-weight: 500;">${escapeHtml(newTokens[j])}</ins>`
+      addAddition(newTokens[j])
       j++
     }
   }
 
   while (i < N) {
-    html += `<del style="background: rgba(239, 68, 68, 0.25); color: #f87171; text-decoration: line-through; border-radius: 2px; padding: 0 2px;">${escapeHtml(oldTokens[i])}</del>`
+    addRemoval(oldTokens[i])
     i++
   }
+
   while (j < M) {
-    html += `<ins style="background: rgba(34, 197, 94, 0.25); color: #4ade80; text-decoration: none; border-radius: 2px; padding: 0 2px; font-weight: 500;">${escapeHtml(newTokens[j])}</ins>`
+    addAddition(newTokens[j])
     j++
   }
 
-  return html
+  return { html, additions, removals }
 }
 
 export function showDiffPreviewModal(
@@ -74,14 +103,16 @@ export function showDiffPreviewModal(
   diffItems: FieldDiffItem[],
   onConfirm: (approvedFields: FieldDiffItem[]) => void
 ) {
-const modifiedFields = diffItems.filter((d) => d.oldValue !== d.newValue)
+  const modifiedFields = diffItems.filter((d) => d.oldValue !== d.newValue)
 
-if (modifiedFields.length === 0) {
+  if (modifiedFields.length === 0) {
     return false
   }
 
+  const approvedFields = new Set(modifiedFields.map((field) => field.fieldId))
+
   const modal = ctx.ui.showModal({
-    title: `Preview Changes (${modifiedFields.length} field${modifiedFields.length === 1 ? '' : 's'} modified)`,
+    title: `Preview Changes (${approvedFields.size}/${modifiedFields.length} fields modified)`,
     width: 1200,
     maxHeight: 900,
   })
@@ -94,16 +125,22 @@ if (modifiedFields.length === 0) {
     min-height: 0;
     max-height: 100%;
     gap: 10px;
-    overflow: hidden;
   `
+
+  const updateTitle = () => {
+    modal.setTitle(
+      `Preview Changes (${approvedFields.size}/${modifiedFields.length} fields modified)`
+    )
+  }
 
   // ── Pinned Top Action Bar (Centered) ──
   const topBar = document.createElement('div')
   topBar.style.cssText = `
     flex-shrink: 0;
     display: flex;
-    flex-direction: column;
+    justify-content: center;
     align-items: center;
+    gap: 12px;
     padding-bottom: 10px;
     border-bottom: 1px solid var(--lumiverse-border, rgba(128, 128, 128, 0.2));
   `
@@ -136,29 +173,16 @@ if (modifiedFields.length === 0) {
     font-weight: 600;
     cursor: pointer;
   `
-
-  const approvedFields = new Set(modifiedFields.map((field) => field.fieldId))
-  
   applyBtn.addEventListener('click', () => {
     const approved = modifiedFields.filter((field) =>
-    approvedFields.has(field.fieldId)
-  )
+      approvedFields.has(field.fieldId)
+    )
 
     onConfirm(approved)
     modal.dismiss()
   })
 
-  const actionBar = document.createElement('div')
-  actionBar.style.cssText = `
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 12px;
-    padding-top: 10px;
-  `
-  actionBar.append(cancelBtn, applyBtn)
-
-  topBar.appendChild(actionBar)
+  topBar.append(cancelBtn, applyBtn)
 
   // ── Scrollable Diff Body ──
   const body = document.createElement('div')
@@ -195,6 +219,8 @@ if (modifiedFields.length === 0) {
       flex-shrink: 0;
     `
 
+    const diff = computeWordDiff(field.oldValue, field.newValue)
+
     const header = document.createElement('div')
     header.style.cssText = `
       background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.06));
@@ -203,54 +229,71 @@ if (modifiedFields.length === 0) {
       font-size: 12.5px;
       border-bottom: none;
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       cursor: pointer;
       user-select: none;
     `
 
-    const label = document.createElement('span')
-    label.textContent = `▶ ${field.label}`
-    header.appendChild(label)
-
-    const toggleLabel = document.createElement('label')
-    toggleLabel.style.cssText = `
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      margin-left: auto;
-      font-size: 11px;
-      font-weight: 500;
-      cursor: pointer;
+    const counts = document.createElement('span')
+    counts.innerHTML = `
+      <span style="color: #4ade80;">+${diff.additions}</span>,
+      <span style="color: #f87171;">-${diff.removals}</span>
+    `
+    counts.style.cssText = `
       flex-shrink: 0;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
     `
 
-    const toggle = document.createElement('input')
-    toggle.type = 'checkbox'
-    toggle.checked = true
-    toggle.style.cssText = `
-      width: 14px;
-      height: 14px;
-      margin: 0;
+    const arrow = document.createElement('span')
+    arrow.textContent = '▶'
+    arrow.style.cssText = `
+      flex-shrink: 0;
+      color: var(--lumiverse-accent, #9370db);
+      font-size: 11px;
+    `
+
+    const label = document.createElement('span')
+    label.textContent = field.label
+    label.style.cssText = `
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    `
+
+    const approvalLabel = document.createElement('label')
+    approvalLabel.style.cssText = `
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+      font-size: 11px;
+      font-weight: normal;
+      color: var(--lumiverse-text-dim, rgba(255, 255, 255, 0.6));
       cursor: pointer;
     `
+    approvalLabel.title = 'Approve or exclude this field'
 
-    toggle.addEventListener('click', (event) => {
+    const approvalCheckbox = document.createElement('input')
+    approvalCheckbox.type = 'checkbox'
+    approvalCheckbox.checked = true
+    approvalCheckbox.addEventListener('click', (event) => {
       event.stopPropagation()
-
-      if (toggle.checked) {
+    })
+    approvalCheckbox.addEventListener('change', () => {
+      if (approvalCheckbox.checked) {
         approvedFields.add(field.fieldId)
       } else {
         approvedFields.delete(field.fieldId)
       }
+      updateTitle()
     })
 
-    const toggleText = document.createElement('span')
-    toggleText.textContent = 'Apply'
-
-    toggleLabel.append(toggle, toggleText)
-    header.appendChild(toggleLabel)
+    approvalLabel.appendChild(approvalCheckbox)
 
     if (field.sublabel) {
       const sublabel = document.createElement('span')
@@ -260,8 +303,14 @@ if (modifiedFields.length === 0) {
         color: var(--lumiverse-text-dim, rgba(255, 255, 255, 0.5));
         font-weight: normal;
         text-align: right;
+        max-width: 25%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       `
-      header.appendChild(sublabel)
+      header.append(counts, arrow, label, sublabel, approvalLabel)
+    } else {
+      header.append(counts, arrow, label, approvalLabel)
     }
 
     const diffContent = document.createElement('div')
@@ -275,20 +324,15 @@ if (modifiedFields.length === 0) {
       max-height: 280px;
       overflow-y: auto;
       display: none;
+      border-top: 1px solid var(--lumiverse-border, rgba(128, 128, 128, 0.2));
     `
-    diffContent.innerHTML = computeWordDiffHtml(field.oldValue, field.newValue)
+    diffContent.innerHTML = diff.html
 
     header.addEventListener('click', () => {
-    const isOpen = diffContent.style.display !== 'none'
-
-    diffContent.style.display = isOpen ? 'none' : 'block'
-    label.textContent = `${isOpen ? '▶' : '▼'} ${field.label}`
-
-    // Remove the separator when the field is collapsed.
-    header.style.borderBottom = isOpen
-      ? 'none'
-      : '1px solid var(--lumiverse-border, rgba(128, 128, 128, 0.2))'
-})
+      const isOpen = diffContent.style.display !== 'none'
+      diffContent.style.display = isOpen ? 'none' : 'block'
+      arrow.textContent = isOpen ? '▶' : '▼'
+    })
 
     card.append(header, diffContent)
     body.appendChild(card)
@@ -296,6 +340,7 @@ if (modifiedFields.length === 0) {
 
   shell.append(topBar, body)
   modal.root.appendChild(shell)
+
 
   return true
 }
