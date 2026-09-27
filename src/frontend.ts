@@ -95,6 +95,7 @@ export function setup(ctx: SpindleFrontendContext) {
   let historyIndex = 0
   const MAX_HISTORY = 100
   let typingTimer: ReturnType<typeof setTimeout> | null = null
+  let savedFieldsSnapshot: FieldItem[] = []
 
   // ── Register Drawer Tab ──
   const tab = ctx.ui.registerDrawerTab({
@@ -117,7 +118,7 @@ export function setup(ctx: SpindleFrontendContext) {
     /* CSS: Generic horizontal flex row used throughout the UI; wraps on narrow screens. */
     .rs-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     /* CSS: Keep the editor workspace fixed while only the field list scrolls. */
-    #rs-view-editor { overflow: hidden; min-height: 0; height: 0; flex: 1 1 auto; }
+    #rs-view-editor { overflow: hidden; min-height: 0; height: 0; flex: 1 1 auto; }\n    #rs-view-pipelines { overflow: hidden; min-height: 0; height: 0; flex: 1 1 auto; display: flex; flex-direction: column; }
     /* CSS: Keep the regex controls and action toolbar visible above the scrolling fields. */
     #rs-regex-card { flex-shrink: 0; }
     #rs-view-editor > .rs-row, #rs-view-editor > .rs-settings-details, #rs-view-editor > .rs-action-toolbar { flex-shrink: 0; }
@@ -132,15 +133,17 @@ export function setup(ctx: SpindleFrontendContext) {
     /* CSS: Focus state for inputs/selects; highlights the active control with the accent color. */
     .rs-input:focus { border-color: var(--lumiverse-accent); }
     /* CSS: Base button style used for normal actions throughout Regex Studio. */
-    .rs-btn { background: var(--lumiverse-fill-subtle); color: var(--lumiverse-text); border: 1px solid var(--lumiverse-border); border-radius: var(--lumiverse-radius); padding: 5px 10px; font-size: 12px; cursor: pointer; transition: background 0.15s; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; }
+    .rs-btn { background: var(--lumiverse-fill-subtle); color: var(--lumiverse-text); border: 1px solid var(--lumiverse-border) !important; border-radius: var(--lumiverse-radius); padding: 5px 10px; font-size: 12px; cursor: pointer; transition: background 0.15s; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; }
     /* CSS: Hover state for enabled buttons. */
     .rs-btn:hover:not(:disabled) { background: var(--lumiverse-border); }
     /* CSS: Disabled-button state; dims the button and prevents normal pointer interaction. */
     .rs-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     /* CSS: Primary-action button style for the currently emphasized action. */
-    .rs-btn-primary { background: var(--lumiverse-accent); color: var(--lumiverse-accent-fg, #fff); border: 1px solid var(--lumiverse-accent); }
+    .rs-container .rs-btn.rs-btn-primary { background: var(--lumiverse-accent); color: var(--lumiverse-accent-fg, #fff); border: 1px solid var(--lumiverse-accent) !important; }
     /* CSS: Slightly dims a primary button on hover. */
     .rs-btn-primary:hover:not(:disabled) { opacity: 0.9; }
+    /* CSS: Makes unsaved Save Changes state unmistakable even if host styles override button borders. */
+    .rs-container #rs-save-btn.rs-save-dirty { border: 2px solid var(--lumiverse-accent) !important; outline: 2px solid var(--lumiverse-accent) !important; outline-offset: 1px; box-shadow: 0 0 0 2px var(--lumiverse-accent) !important; }
     
     /* CSS: Pill/chip control used for field filters, regex mode, and regex flags. */
     .rs-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 11px; background: var(--lumiverse-fill); border: 1px solid var(--lumiverse-border); border-radius: 12px; cursor: pointer; user-select: none; font-weight: 500; }
@@ -307,6 +310,7 @@ export function setup(ctx: SpindleFrontendContext) {
           <div id="rs-single-inputs-row" class="rs-row">
             <!-- HTML/CSS: Regex/literal search pattern input. -->
             <input type="text" id="rs-regex-find" class="rs-input" placeholder="Find text..." style="flex: 1; min-width: 140px;" />
+            <span id="rs-regex-error" title="Invalid regular expression" style="display: none; flex-shrink: 0; color: #f87171; font-size: 14px; line-height: 1;">⚠</span>
             <!-- HTML/CSS: Replacement text or replacement expression input. -->
             <input type="text" id="rs-regex-replace" class="rs-input" placeholder="Replace with..." style="flex: 1; min-width: 140px;" />
           </div>
@@ -384,6 +388,7 @@ export function setup(ctx: SpindleFrontendContext) {
   const gotoPipelineBtn = tab.root.querySelector('#rs-goto-pipeline-btn') as HTMLButtonElement
 
   const regexFindInput = tab.root.querySelector('#rs-regex-find') as HTMLInputElement
+  const regexErrorIcon = tab.root.querySelector('#rs-regex-error') as HTMLElement
   const regexReplaceInput = tab.root.querySelector('#rs-regex-replace') as HTMLInputElement
   const regexToggleBtn = tab.root.querySelector('#rs-toggle-regex') as HTMLElement
   const diffToggleBtn = tab.root.querySelector('#rs-toggle-diff') as HTMLElement
@@ -459,6 +464,18 @@ export function setup(ctx: SpindleFrontendContext) {
     return arr.map((f) => ({ ...f }))
   }
 
+  function fieldsMatchSnapshot() {
+    if (fields.length !== savedFieldsSnapshot.length) return false
+    return fields.every((field, index) =>
+      field.id === savedFieldsSnapshot[index].id &&
+      field.value === savedFieldsSnapshot[index].value
+    )
+  }
+
+  function updateDirtyState() {
+    saveBtn.classList.toggle('rs-save-dirty', !fieldsMatchSnapshot())
+  }
+
   function pushHistory(newFields: FieldItem[]) {
     historyStack = historyStack.slice(0, historyIndex + 1)
     historyStack.push(cloneFields(newFields))
@@ -468,6 +485,7 @@ export function setup(ctx: SpindleFrontendContext) {
       historyIndex++
     }
     updateHistoryButtons()
+    updateDirtyState()
   }
 
   function updateHistoryButtons() {
@@ -481,6 +499,7 @@ export function setup(ctx: SpindleFrontendContext) {
       fields = cloneFields(historyStack[historyIndex])
       updateDomTextareasFromState()
       updateHistoryButtons()
+      updateDirtyState()
       scanMatches({ shouldFocus: false })
     }
   }
@@ -491,6 +510,7 @@ export function setup(ctx: SpindleFrontendContext) {
       fields = cloneFields(historyStack[historyIndex])
       updateDomTextareasFromState()
       updateHistoryButtons()
+      updateDirtyState()
       scanMatches({ shouldFocus: false })
     }
   }
@@ -498,7 +518,9 @@ export function setup(ctx: SpindleFrontendContext) {
   function resetHistory(initialFields: FieldItem[]) {
     historyStack = [cloneFields(initialFields)]
     historyIndex = 0
+    savedFieldsSnapshot = cloneFields(initialFields)
     updateHistoryButtons()
+    updateDirtyState()
   }
 
   // ── Highlight Color ──
@@ -678,6 +700,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
       textarea.oninput = () => {
         field.value = textarea.value
+        updateDirtyState()
         scanMatches({ shouldFocus: false })
 
         if (typingTimer) clearTimeout(typingTimer)
@@ -789,18 +812,28 @@ export function setup(ctx: SpindleFrontendContext) {
   // ── Single Regex Matching Engine ──
   function getActiveRegExp(): RegExp | null {
     const pattern = regexFindInput.value
-    if (!pattern) return null
+    if (!pattern || !useRegex) {
+      regexErrorIcon.style.display = 'none'
+      regexFindInput.style.borderColor = ''
+      if (!pattern) return null
+      return new RegExp(escapeRegExp(pattern), flags.i ? 'gi' : 'g')
+    }
+
     try {
-      if (!useRegex) {
-        return new RegExp(escapeRegExp(pattern), flags.i ? 'gi' : 'g')
-      }
       let flagStr = ''
       if (flags.g) flagStr += 'g'
       if (flags.i) flagStr += 'i'
       if (flags.m) flagStr += 'm'
       if (flags.s) flagStr += 's'
-      return new RegExp(pattern, flagStr)
-    } catch {
+      const rx = new RegExp(pattern, flagStr)
+      regexErrorIcon.style.display = 'none'
+      regexErrorIcon.title = 'Invalid regular expression'
+      regexFindInput.style.borderColor = ''
+      return rx
+    } catch (err: any) {
+      regexErrorIcon.style.display = 'inline'
+      regexErrorIcon.title = err instanceof Error ? err.message : 'Invalid regular expression'
+      regexFindInput.style.borderColor = '#f87171'
       return null
     }
   }
@@ -1041,6 +1074,23 @@ export function setup(ctx: SpindleFrontendContext) {
     scanMatches({ shouldFocus: false })
   }
 
+  function makeDiffItem(field: FieldItem, newValue: string): FieldDiffItem {
+    const batchField = field as Partial<BatchFieldItem>
+    return {
+      fieldId: field.id,
+      label: field.label,
+      sublabel: field.sublabel,
+      oldValue: field.value,
+      newValue,
+      ...(currentSourceMode === 'character_batch' && batchField.characterId
+        ? {
+            characterId: batchField.characterId,
+            characterName: batchField.characterName,
+          }
+        : {}),
+    }
+  }
+
   function handleReplaceAllClick() {
     if (fields.length === 0) return
 
@@ -1050,13 +1100,9 @@ export function setup(ctx: SpindleFrontendContext) {
       const preset = presets.find((p) => p.id === runnerPresetSelect.value)
       if (!preset || preset.steps.length === 0) return
 
-      diffItems = fields.map((field) => ({
-        fieldId: field.id,
-        label: field.label,
-        sublabel: field.sublabel,
-        oldValue: field.value,
-        newValue: runPipelineOnText(field.value, preset.steps),
-      }))
+      diffItems = fields.map((field) =>
+        makeDiffItem(field, runPipelineOnText(field.value, preset.steps))
+      )
     } else {
       const rx = getActiveRegExp()
       if (!rx) return
@@ -1067,13 +1113,7 @@ export function setup(ctx: SpindleFrontendContext) {
           ? field.value.replace(rx, replaceStr)
           : field.value.replace(rx, () => replaceStr)
 
-        return {
-          fieldId: field.id,
-          label: field.label,
-          sublabel: field.sublabel,
-          oldValue: field.value,
-          newValue,
-        }
+        return makeDiffItem(field, newValue)
       })
     }
 
@@ -1307,6 +1347,8 @@ export function setup(ctx: SpindleFrontendContext) {
       }
 
       case 'save_success': {
+        savedFieldsSnapshot = cloneFields(fields)
+        updateDirtyState()
         if (payload.entityType === 'character' && selectedChar) {
           ctx.sendToBackend({ type: 'get_character', characterId: selectedChar.id })
         } else if (payload.entityType === 'character_batch' && selectedBatchIds.length > 0) {

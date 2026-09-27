@@ -7,6 +7,8 @@ export interface FieldDiffItem {
   oldValue: string
   newValue: string
   approved?: boolean
+  characterId?: string
+  characterName?: string
 }
 
 function escapeHtml(str: string): string {
@@ -110,6 +112,17 @@ export function showDiffPreviewModal(
   }
 
   const approvedFields = new Set(modifiedFields.map((field) => field.fieldId))
+  const isBatch = modifiedFields.some((field) => field.characterId)
+
+  const characterGroups = new Map<string, { id: string; name: string; fields: FieldDiffItem[] }>()
+  if (isBatch) {
+    for (const field of modifiedFields) {
+      const id = field.characterId || field.fieldId
+      const existing = characterGroups.get(id)
+      if (existing) existing.fields.push(field)
+      else characterGroups.set(id, { id, name: field.characterName || field.sublabel || field.label, fields: [field] })
+    }
+  }
 
   const modal = ctx.ui.showModal({
     title: `Preview Changes (${approvedFields.size}/${modifiedFields.length} fields modified)`,
@@ -209,7 +222,10 @@ export function showDiffPreviewModal(
   `
   body.appendChild(intro)
 
-  for (const field of modifiedFields) {
+  const getCharacterEnabledCount = (group: { fields: FieldDiffItem[] }) =>
+    group.fields.filter((field) => approvedFields.has(field.fieldId)).length
+
+  const renderFieldCard = (field: FieldDiffItem, parentBody: HTMLElement) => {
     const card = document.createElement('div')
     card.style.cssText = `
       background: var(--lumiverse-fill, rgba(255, 255, 255, 0.03));
@@ -280,19 +296,13 @@ export function showDiffPreviewModal(
 
     const approvalCheckbox = document.createElement('input')
     approvalCheckbox.type = 'checkbox'
-    approvalCheckbox.checked = true
-    approvalCheckbox.addEventListener('click', (event) => {
-      event.stopPropagation()
-    })
+    approvalCheckbox.checked = approvedFields.has(field.fieldId)
+    approvalCheckbox.addEventListener('click', (event) => event.stopPropagation())
     approvalCheckbox.addEventListener('change', () => {
-      if (approvalCheckbox.checked) {
-        approvedFields.add(field.fieldId)
-      } else {
-        approvedFields.delete(field.fieldId)
-      }
+      if (approvalCheckbox.checked) approvedFields.add(field.fieldId)
+      else approvedFields.delete(field.fieldId)
       updateTitle()
     })
-
     approvalLabel.appendChild(approvalCheckbox)
 
     if (field.sublabel) {
@@ -335,7 +345,97 @@ export function showDiffPreviewModal(
     })
 
     card.append(header, diffContent)
-    body.appendChild(card)
+    parentBody.appendChild(card)
+    return approvalCheckbox
+  }
+
+  if (isBatch) {
+    for (const group of characterGroups.values()) {
+      const characterCard = document.createElement('div')
+      characterCard.style.cssText = `
+        background: var(--lumiverse-fill, rgba(255, 255, 255, 0.03));
+        border: 1px solid var(--lumiverse-border, rgba(128, 128, 128, 0.2));
+        border-radius: 6px;
+        overflow: hidden;
+        flex-shrink: 0;
+      `
+
+      const characterHeader = document.createElement('div')
+      characterHeader.style.cssText = `
+        background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.06));
+        padding: 8px 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        user-select: none;
+      `
+
+      const characterArrow = document.createElement('span')
+      characterArrow.textContent = '▼'
+      characterArrow.style.cssText = 'color: var(--lumiverse-accent, #9370db); font-size: 11px; cursor: pointer;'
+
+      const characterName = document.createElement('span')
+      characterName.textContent = group.name
+      characterName.style.cssText = 'flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; cursor: pointer;'
+
+      const characterCount = document.createElement('span')
+      characterCount.style.cssText = 'flex-shrink: 0; font-size: 11px; font-weight: 600; color: var(--lumiverse-text-dim, rgba(255,255,255,0.6));'
+
+      const characterApprovalLabel = document.createElement('label')
+      characterApprovalLabel.style.cssText = 'display: flex; align-items: center; flex-shrink: 0; cursor: pointer;'
+      characterApprovalLabel.title = 'Approve or exclude all edits for this character'
+
+      const characterCheckbox = document.createElement('input')
+      characterCheckbox.type = 'checkbox'
+      characterCheckbox.checked = getCharacterEnabledCount(group) === group.fields.length
+
+      const fieldContainer = document.createElement('div')
+      fieldContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px; padding: 8px;'
+
+      const updateCharacterUI = () => {
+        const enabled = getCharacterEnabledCount(group)
+        characterCount.textContent = `(${enabled}/${group.fields.length})`
+        characterCheckbox.checked = enabled === group.fields.length
+        characterCheckbox.indeterminate = enabled > 0 && enabled < group.fields.length
+      }
+
+      const fieldCheckboxes: HTMLInputElement[] = []
+      for (const field of group.fields) {
+        const checkbox = renderFieldCard(field, fieldContainer)
+        fieldCheckboxes.push(checkbox)
+        checkbox.addEventListener('change', updateCharacterUI)
+      }
+
+      characterCheckbox.addEventListener('click', (event) => event.stopPropagation())
+      characterCheckbox.addEventListener('change', () => {
+        group.fields.forEach((field) => {
+          if (characterCheckbox.checked) approvedFields.add(field.fieldId)
+          else approvedFields.delete(field.fieldId)
+        })
+        fieldCheckboxes.forEach((checkbox) => {
+          checkbox.checked = characterCheckbox.checked
+        })
+        updateCharacterUI()
+        updateTitle()
+      })
+
+      characterApprovalLabel.appendChild(characterCheckbox)
+      characterHeader.append(characterArrow, characterName, characterCount, characterApprovalLabel)
+
+      const toggleCharacter = () => {
+        const isOpen = fieldContainer.style.display !== 'none'
+        fieldContainer.style.display = isOpen ? 'none' : 'flex'
+        characterArrow.textContent = isOpen ? '▶' : '▼'
+      }
+      characterArrow.addEventListener('click', toggleCharacter)
+      characterName.addEventListener('click', toggleCharacter)
+
+      characterCard.append(characterHeader, fieldContainer)
+      body.appendChild(characterCard)
+      updateCharacterUI()
+    }
+  } else {
+    for (const field of modifiedFields) renderFieldCard(field, body)
   }
 
   shell.append(topBar, body)
