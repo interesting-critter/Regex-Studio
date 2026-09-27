@@ -239,7 +239,7 @@ export class PipelineManagerUI {
       const isExpanded = this.expandedSteps.has(step.id)
       const stepCard = document.createElement('div')
       stepCard.className = 'rs-card'
-      stepCard.style.cssText = 'border: 1px solid var(--lumiverse-border); padding: 0; overflow: hidden;'
+      stepCard.style.cssText = 'border: 1px solid var(--lumiverse-border); padding: 0; overflow: hidden; flex-shrink: 0;'
 
       const header = document.createElement('div')
       header.style.cssText = `
@@ -381,4 +381,3 @@ export class PipelineManagerUI {
 function escapeHtml(str: string): string {
   return str.replace(/"/g, '&quot;')
 }
-
