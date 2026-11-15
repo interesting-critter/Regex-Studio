@@ -1,0 +1,6 @@
+# Dependencies (lumiverse-spindle-types provides the `spindle` global's types)
+node_modules/
+
+# Build output. spindle.json points at dist/, but Lumiverse auto-builds these
+# from src/ on install when they are absent, so they are not tracked.
+dist/

@@ -1,4 +1,5 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types'
+import { computeWordDiff } from './diff-engine'
 
 export interface FieldDiffItem {
   fieldId: string
@@ -9,95 +10,6 @@ export interface FieldDiffItem {
   approved?: boolean
   characterId?: string
   characterName?: string
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-interface DiffResult {
-  html: string
-  additions: number
-  removals: number
-}
-
-/**
- * Lightweight word-level token diff engine.
- *
- * Words are kept together, while punctuation/symbols are tokenized one
- * character at a time. This is important for regex edits such as removing
- * `*` next to `{{user}}`: the `*` is then shown as the only removal instead
- * of grouping it together with the neighboring braces.
- */
-function computeWordDiff(oldStr: string, newStr: string): DiffResult {
-  const tokenize = (s: string) =>
-    s.match(/[\w']+|[^\w\s]|\s+/g) || []
-
-  const oldTokens = tokenize(oldStr)
-  const newTokens = tokenize(newStr)
-
-  const N = oldTokens.length
-  const M = newTokens.length
-  const dp: number[][] = Array.from(
-    { length: N + 1 },
-    () => new Array(M + 1).fill(0)
-  )
-
-  for (let i = N - 1; i >= 0; i--) {
-    for (let j = M - 1; j >= 0; j--) {
-      if (oldTokens[i] === newTokens[j]) {
-        dp[i][j] = 1 + dp[i + 1][j + 1]
-      } else {
-        dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1])
-      }
-    }
-  }
-
-  let i = 0
-  let j = 0
-  let html = ''
-  let additions = 0
-  let removals = 0
-
-  const addRemoval = (token: string) => {
-    removals += token.length
-    html += `<del style="background: rgba(239, 68, 68, 0.25); color: #f87171; text-decoration: line-through; border-radius: 2px; padding: 0 2px;">${escapeHtml(token)}</del>`
-  }
-
-  const addAddition = (token: string) => {
-    additions += token.length
-    html += `<ins style="background: rgba(34, 197, 94, 0.25); color: #4ade80; text-decoration: none; border-radius: 2px; padding: 0 2px; font-weight: 500;">${escapeHtml(token)}</ins>`
-  }
-
-  while (i < N && j < M) {
-    if (oldTokens[i] === newTokens[j]) {
-      html += escapeHtml(oldTokens[i])
-      i++
-      j++
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      addRemoval(oldTokens[i])
-      i++
-    } else {
-      addAddition(newTokens[j])
-      j++
-    }
-  }
-
-  while (i < N) {
-    addRemoval(oldTokens[i])
-    i++
-  }
-
-  while (j < M) {
-    addAddition(newTokens[j])
-    j++
-  }
-
-  return { html, additions, removals }
 }
 
 export function showDiffPreviewModal(
