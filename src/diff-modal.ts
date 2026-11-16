@@ -147,8 +147,6 @@ export function showDiffPreviewModal(
       flex-shrink: 0;
     `
 
-    const diff = computeWordDiff(field.oldValue, field.newValue)
-
     const header = document.createElement('div')
     header.style.cssText = `
       background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.06));
@@ -164,10 +162,7 @@ export function showDiffPreviewModal(
     `
 
     const counts = document.createElement('span')
-    counts.innerHTML = `
-      <span style="color: #4ade80;">+${diff.additions}</span>,
-      <span style="color: #f87171;">-${diff.removals}</span>
-    `
+    counts.textContent = '…' // computed lazily on first expand
     counts.style.cssText = `
       flex-shrink: 0;
       font-size: 11px;
@@ -248,10 +243,28 @@ export function showDiffPreviewModal(
       display: none;
       border-top: 1px solid var(--lumiverse-border, rgba(128, 128, 128, 0.2));
     `
-    diffContent.innerHTML = diff.html
+
+    // Word diff is computed lazily on first expand — hundreds of cards would otherwise diff up front.
+    // cached only after a full successful compute+render so a failure leaves the '…' badge and allows retry
+    let cachedDiff: { html: string; additions: number; removals: number } | null = null
+    const hydrateDiff = () => {
+      if (cachedDiff) return
+      try {
+        const computed = computeWordDiff(field.oldValue, field.newValue)
+        diffContent.innerHTML = computed.html
+        counts.innerHTML = `
+          <span style="color: #4ade80;">+${computed.additions}</span>,
+          <span style="color: #f87171;">-${computed.removals}</span>
+        `
+        cachedDiff = computed
+      } catch {
+        // keep the '…' badge; the next expand retries the compute
+      }
+    }
 
     header.addEventListener('click', () => {
       const isOpen = diffContent.style.display !== 'none'
+      if (!isOpen) hydrateDiff()
       diffContent.style.display = isOpen ? 'none' : 'block'
       arrow.textContent = isOpen ? '▶' : '▼'
     })

@@ -94,8 +94,28 @@ export function setup(ctx: SpindleFrontendContext) {
   let historyStack: FieldItem[][] = [[]]
   let historyIndex = 0
   const MAX_HISTORY = 100
+  // Entry count alone doesn't bound memory — 100 snapshots of a large batch can
+  // reach hundreds of MB, so trim oldest entries once total retained text exceeds this budget.
+  const HISTORY_BYTE_BUDGET = 48 * 1024 * 1024
   let typingTimer: ReturnType<typeof setTimeout> | null = null
   let savedFieldsSnapshot: FieldItem[] = []
+  let pendingSentSnapshot: FieldItem[] | null = null
+  let pendingSentBookId: string | null = null
+  let rsToastTimer: ReturnType<typeof setTimeout> | null = null
+
+  // ── RS Toast ──
+  function showRsToast(message: string, kind: 'info' | 'error' = 'info') {
+    document.querySelectorAll('.rs-toast').forEach((el) => el.remove())
+    if (rsToastTimer) clearTimeout(rsToastTimer)
+    const toast = document.createElement('div')
+    toast.className = kind === 'error' ? 'rs-toast rs-toast-error' : 'rs-toast'
+    toast.textContent = message
+    document.body.appendChild(toast)
+    rsToastTimer = setTimeout(() => {
+      toast.remove()
+      rsToastTimer = null
+    }, 6000)
+  }
 
   // ── Register Drawer Tab ──
   const tab = ctx.ui.registerDrawerTab({
@@ -194,6 +214,10 @@ export function setup(ctx: SpindleFrontendContext) {
     .rs-nav-tab { padding: 6px 14px; font-weight: 600; font-size: 12.5px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--lumiverse-text-dim); }
     /* CSS: Active top-level navigation tab; accent text and underline identify the current view. */
     .rs-nav-tab.active { color: var(--lumiverse-accent); border-bottom-color: var(--lumiverse-accent); }
+    /* CSS: Minimal fixed-position toast for backend notices (e.g. revision conflicts, nothing-to-save). */
+    .rs-toast { position: fixed; bottom: 18px; right: 18px; z-index: 10000; max-width: 420px; padding: 10px 14px; border-radius: var(--lumiverse-radius); font-size: 12px; line-height: 1.4; background: var(--lumiverse-fill-subtle); color: var(--lumiverse-text); border: 1px solid var(--lumiverse-border); border-left: 3px solid var(--lumiverse-accent); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4); }
+    /* CSS: Error variant of the rs-toast; red accent bar. */
+    .rs-toast.rs-toast-error { border-left-color: #f87171; }
   `)
 
   // ── Render HTML Shell ──
@@ -476,6 +500,17 @@ export function setup(ctx: SpindleFrontendContext) {
     saveBtn.classList.toggle('rs-save-dirty', !fieldsMatchSnapshot())
   }
 
+  // Dirty ids aligned by snapshot index; a length/id mismatch (e.g. after Reset) breaks alignment, so everything is treated as dirty.
+  function getDirtyFieldIds(): Set<string> {
+    const aligned = savedFieldsSnapshot.length === fields.length
+    const dirty = new Set<string>()
+    fields.forEach((field, index) => {
+      const snap = aligned ? savedFieldsSnapshot[index] : undefined
+      if (!snap || snap.id !== field.id || snap.value !== field.value) dirty.add(field.id)
+    })
+    return dirty
+  }
+
   function pushHistory(newFields: FieldItem[]) {
     historyStack = historyStack.slice(0, historyIndex + 1)
     historyStack.push(cloneFields(newFields))
@@ -483,6 +518,16 @@ export function setup(ctx: SpindleFrontendContext) {
       historyStack.shift()
     } else {
       historyIndex++
+    }
+    // Drop oldest entries once total retained text (UTF-16 ≈ 2 bytes/char) exceeds the budget.
+    const entryBytes = historyStack.map((entry) =>
+      entry.reduce((sum, f) => sum + f.value.length * 2, 0)
+    )
+    let totalBytes = entryBytes.reduce((sum, n) => sum + n, 0)
+    while (historyStack.length > 1 && totalBytes > HISTORY_BYTE_BUDGET) {
+      totalBytes -= entryBytes.shift() ?? 0
+      historyStack.shift()
+      historyIndex = Math.max(0, historyIndex - 1)
     }
     updateHistoryButtons()
     updateDirtyState()
@@ -516,6 +561,8 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   function resetHistory(initialFields: FieldItem[]) {
+    // baseline is wholesale replaced — any in-flight save snapshot belongs to the old baseline
+    pendingSentSnapshot = null
     historyStack = [cloneFields(initialFields)]
     historyIndex = 0
     savedFieldsSnapshot = cloneFields(initialFields)
@@ -535,6 +582,35 @@ export function setup(ctx: SpindleFrontendContext) {
     updateSelectOptions()
   })
 
+  // ── Debounced Batch Fetch ──
+  const BATCH_FETCH_DEBOUNCE_MS = 275
+  let batchFetchTimer: ReturnType<typeof setTimeout> | null = null
+  // bumped on every send and on every source-mode switch; a batch_characters_data
+  // response whose generation is stale is dropped by the message handler
+  let batchLoadGeneration = 0
+  let pendingBatchLoadGen = 0
+
+  function cancelPendingBatchFetch() {
+    if (batchFetchTimer) {
+      clearTimeout(batchFetchTimer)
+      batchFetchTimer = null
+    }
+  }
+
+  function sendGetBatchCharacters(ids: string[]) {
+    batchLoadGeneration++
+    pendingBatchLoadGen = batchLoadGeneration
+    ctx.sendToBackend({ type: 'get_batch_characters', characterIds: ids })
+  }
+
+  function scheduleBatchFetch(ids: string[]) {
+    cancelPendingBatchFetch()
+    batchFetchTimer = setTimeout(() => {
+      batchFetchTimer = null
+      sendGetBatchCharacters(ids)
+    }, BATCH_FETCH_DEBOUNCE_MS)
+  }
+
   // ── Mount Unified Select Picker ──
   function mountCurrentSelect() {
     singleSelectComp?.destroy()
@@ -553,8 +629,10 @@ export function setup(ctx: SpindleFrontendContext) {
         onChange: (ids) => {
           selectedBatchIds = ids || []
           if (selectedBatchIds.length > 0) {
-            ctx.sendToBackend({ type: 'get_batch_characters', characterIds: selectedBatchIds })
+            scheduleBatchFetch(selectedBatchIds)
           } else {
+            cancelPendingBatchFetch()
+            batchLoadGeneration++ // invalidate any already-fired batch response
             selectedBatchChars = []
             fields = []
             renderFieldsDOM()
@@ -701,7 +779,7 @@ export function setup(ctx: SpindleFrontendContext) {
       textarea.oninput = () => {
         field.value = textarea.value
         updateDirtyState()
-        scanMatches({ shouldFocus: false })
+        scheduleScanMatches({ shouldFocus: false })
 
         if (typingTimer) clearTimeout(typingTimer)
         typingTimer = setTimeout(() => {
@@ -807,6 +885,28 @@ export function setup(ctx: SpindleFrontendContext) {
     ]
     renderFieldsDOM()
     resetHistory(fields)
+  }
+
+  // ── Debounced Match Scanning ──
+  const SCAN_DEBOUNCE_MS = 175
+  let scanDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  let pendingScanOpts: { shouldFocus?: boolean; preserveIndex?: boolean } = {}
+
+  function scheduleScanMatches(opts: { shouldFocus?: boolean; preserveIndex?: boolean } = {}) {
+    pendingScanOpts = opts
+    if (scanDebounceTimer) clearTimeout(scanDebounceTimer)
+    scanDebounceTimer = setTimeout(() => {
+      scanDebounceTimer = null
+      scanMatches(pendingScanOpts)
+    }, SCAN_DEBOUNCE_MS)
+  }
+
+  function flushPendingScan() {
+    if (scanDebounceTimer) {
+      clearTimeout(scanDebounceTimer)
+      scanDebounceTimer = null
+    }
+    scanMatches(pendingScanOpts)
   }
 
   // ── Single Regex Matching Engine ──
@@ -1031,18 +1131,21 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   function nextMatch() {
+    flushPendingScan()
     if (currentMatches.length === 0) return
     currentMatchIndex = (currentMatchIndex + 1) % currentMatches.length
     updateMatchUI(true)
   }
 
   function prevMatch() {
+    flushPendingScan()
     if (currentMatches.length === 0) return
     currentMatchIndex = (currentMatchIndex - 1 + currentMatches.length) % currentMatches.length
     updateMatchUI(true)
   }
 
   function replaceSingleMatch() {
+    flushPendingScan()
     if (currentMatchIndex < 0 || currentMatchIndex >= currentMatches.length) return
     const match = currentMatches[currentMatchIndex]
     const field = fields[match.fieldIndex]
@@ -1092,6 +1195,7 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   function handleReplaceAllClick() {
+    flushPendingScan()
     if (fields.length === 0) return
 
     let diffItems: FieldDiffItem[] = []
@@ -1142,6 +1246,8 @@ export function setup(ctx: SpindleFrontendContext) {
     deselectAllBtn.style.display = mode === 'character_batch' ? 'inline-flex' : 'none'
     fieldsFilterCard.style.display = (mode === 'character' || mode === 'character_batch') ? 'flex' : 'none'
 
+    cancelPendingBatchFetch()
+    batchLoadGeneration++
     if (mode === 'custom') {
       selectorSection.style.display = 'none'
       saveBtn.style.display = 'none'
@@ -1153,6 +1259,7 @@ export function setup(ctx: SpindleFrontendContext) {
       selectedBatchIds = []
       selectedBatchChars = []
       fields = []
+      pendingSentSnapshot = null
       renderFieldsDOM()
       mountCurrentSelect()
       fetchList()
@@ -1195,9 +1302,10 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   }
 
-  function fetchList() {
+  function fetchList(force = false) {
     if (currentSourceMode === 'character' || currentSourceMode === 'character_batch') {
-      ctx.sendToBackend({ type: 'list_characters' })
+      // force bypasses the backend's 60s character-list cache; world books have no force contract
+      ctx.sendToBackend(force ? { type: 'list_characters', force: true } : { type: 'list_characters' })
     } else if (currentSourceMode === 'lorebook') {
       ctx.sendToBackend({ type: 'list_world_books' })
     }
@@ -1209,12 +1317,15 @@ export function setup(ctx: SpindleFrontendContext) {
     const allIds = filteredChars.map((c) => c.id)
     selectedBatchIds = allIds
     multiSelectComp?.update({ value: allIds })
+    cancelPendingBatchFetch()
     if (allIds.length > 0) {
-      ctx.sendToBackend({ type: 'get_batch_characters', characterIds: allIds })
+      sendGetBatchCharacters(allIds)
     }
   }
 
   deselectAllBtn.onclick = () => {
+    cancelPendingBatchFetch()
+    batchLoadGeneration++ // invalidate any already-fired batch response
     selectedBatchIds = []
     multiSelectComp?.update({ value: [] })
     selectedBatchChars = []
@@ -1227,9 +1338,9 @@ export function setup(ctx: SpindleFrontendContext) {
   modeBatchBtn.onclick = () => setSourceMode('character_batch')
   modeLoreBtn.onclick = () => setSourceMode('lorebook')
   modeCustomBtn.onclick = () => setSourceMode('custom')
-  refreshBtn.onclick = () => fetchList()
+  refreshBtn.onclick = () => fetchList(true)
 
-  regexFindInput.oninput = () => scanMatches({ shouldFocus: false })
+  regexFindInput.oninput = () => scheduleScanMatches({ shouldFocus: false })
 
   regexFindInput.onkeydown = (e) => {
     if (e.key === 'Enter') {
@@ -1239,8 +1350,14 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   }
 
-  undoBtn.onclick = () => undo()
-  redoBtn.onclick = () => redo()
+  undoBtn.onclick = () => {
+    flushPendingScan()
+    undo()
+  }
+  redoBtn.onclick = () => {
+    flushPendingScan()
+    redo()
+  }
 
   toggleFieldsBtn.onclick = () => {
     fieldsExpanded = !fieldsExpanded
@@ -1268,21 +1385,31 @@ export function setup(ctx: SpindleFrontendContext) {
 
   saveBtn.onclick = () => {
     if (currentSourceMode === 'character' && selectedChar) {
+      const dirtyIds = getDirtyFieldIds()
       const patch: Record<string, any> = {}
       const altGreetings: string[] = []
+      let altGreetingsDirty = false
 
       fields.forEach((f) => {
         if (f.key === 'alternate_greetings') {
           altGreetings.push(f.value)
-        } else {
+          if (dirtyIds.has(f.id)) altGreetingsDirty = true
+        } else if (dirtyIds.has(f.id)) {
           patch[f.key] = f.value
         }
       })
 
-      if (enabledFields.has('alternate_greetings')) {
+      // one greeting changed → send the whole array in field order
+      if (enabledFields.has('alternate_greetings') && altGreetingsDirty) {
         patch.alternate_greetings = altGreetings
       }
 
+      if (Object.keys(patch).length === 0) {
+        showRsToast('Nothing to save — no changes since last save', 'info')
+        return
+      }
+
+      pendingSentSnapshot = cloneFields(fields)
       ctx.sendToBackend({
         type: 'save_character',
         characterId: selectedChar.id,
@@ -1290,17 +1417,40 @@ export function setup(ctx: SpindleFrontendContext) {
         patch,
       })
     } else if (currentSourceMode === 'character_batch' && selectedBatchChars.length > 0) {
-      const updates = assembleBatchPatches(fields as BatchFieldItem[], enabledFields)
+      const dirtyFieldIds = getDirtyFieldIds()
+      const updates = assembleBatchPatches(fields as BatchFieldItem[], enabledFields, dirtyFieldIds)
+      if (updates.length === 0) {
+        showRsToast('Nothing to save — no changes since last save', 'info')
+        return
+      }
+      pendingSentSnapshot = cloneFields(fields)
       ctx.sendToBackend({
         type: 'save_batch_characters',
         updates,
       })
     } else if (currentSourceMode === 'lorebook' && selectedItemId) {
-      const updates = fields.map((f) => ({ id: f.id, content: f.value }))
+      const dirtyIds = getDirtyFieldIds()
+      if (dirtyIds.size === 0) {
+        showRsToast('Nothing to save — no changes since last save', 'info')
+        return
+      }
+      const updates = fields
+        .filter((f) => dirtyIds.has(f.id))
+        .map((f) => ({ id: f.id, content: f.value }))
+      // field.id is the world-book entry id; attach revisions for exactly the entries being saved
+      const expectedRevisions: Record<string, number> = {}
+      selectedWorldBookEntries.forEach((entry: any) => {
+        if (entry && dirtyIds.has(entry.id) && Number.isInteger(entry.revision) && entry.revision >= 1) {
+          expectedRevisions[entry.id] = entry.revision
+        }
+      })
+      pendingSentSnapshot = cloneFields(fields)
+      pendingSentBookId = selectedItemId
       ctx.sendToBackend({
         type: 'save_world_book_entries',
         worldBookId: selectedItemId,
         updates,
+        expectedRevisions,
       })
     }
   }
@@ -1335,6 +1485,9 @@ export function setup(ctx: SpindleFrontendContext) {
       }
 
       case 'batch_characters_data': {
+        // drop stale responses: wrong mode (user switched away) or superseded by a newer send/mode switch
+        if (currentSourceMode !== 'character_batch') break
+        if (pendingBatchLoadGen !== batchLoadGeneration) break
         selectedBatchChars = payload.characters || []
         buildBatchFields()
         break
@@ -1347,14 +1500,40 @@ export function setup(ctx: SpindleFrontendContext) {
       }
 
       case 'save_success': {
-        savedFieldsSnapshot = cloneFields(fields)
+        // apply backends' load-time-fresh revisions only when the ack is anchored to the book still loaded here
+        if (
+          payload.entityType === 'world_book' &&
+          pendingSentBookId !== null &&
+          pendingSentBookId === selectedItemId &&
+          Array.isArray(payload.revisions)
+        ) {
+          for (const rev of payload.revisions) {
+            if (!rev || !Number.isInteger(rev.revision) || rev.revision < 1) continue
+            const entry = selectedWorldBookEntries.find((e: any) => e && e.id === rev.id)
+            if (entry) entry.revision = rev.revision
+          }
+        }
+        pendingSentBookId = null
+        // adopt the snapshot captured at send time, not the current editor state (which may have moved on)
+        if (pendingSentSnapshot) {
+          savedFieldsSnapshot = cloneFields(pendingSentSnapshot)
+          pendingSentSnapshot = null
+        } else {
+          savedFieldsSnapshot = cloneFields(fields)
+        }
         updateDirtyState()
-        if (payload.entityType === 'character' && selectedChar) {
-          ctx.sendToBackend({ type: 'get_character', characterId: selectedChar.id })
-        } else if (payload.entityType === 'character_batch' && selectedBatchIds.length > 0) {
-          ctx.sendToBackend({ type: 'get_batch_characters', characterIds: selectedBatchIds })
-        } else if (payload.entityType === 'world_book' && selectedItemId) {
-          ctx.sendToBackend({ type: 'get_world_book', worldBookId: selectedItemId })
+        break
+      }
+
+      case 'error': {
+        pendingSentSnapshot = null // fall back to previous snapshot behavior on failure
+        pendingSentBookId = null
+        // revision conflicts carry user-ready copy from the backend — show verbatim; leave editor state untouched
+        if (payload.code === 'revision_conflict') {
+          showRsToast(
+            payload.message || 'Lorebook save failed: an entry was changed outside Regex Studio. Nothing was saved.',
+            'error'
+          )
         }
         break
       }
@@ -1370,6 +1549,10 @@ export function setup(ctx: SpindleFrontendContext) {
   // ── Teardown ──
   return () => {
     if (typingTimer) clearTimeout(typingTimer)
+    if (scanDebounceTimer) clearTimeout(scanDebounceTimer)
+    cancelPendingBatchFetch()
+    if (rsToastTimer) clearTimeout(rsToastTimer)
+    document.querySelectorAll('.rs-toast').forEach((el) => el.remove())
     removeStyle()
     unsubMsg()
     singleSelectComp?.destroy()

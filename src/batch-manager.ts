@@ -59,30 +59,39 @@ export function buildBatchCharacterFields(
 
 export function assembleBatchPatches(
   fields: BatchFieldItem[],
-  enabledFields: Set<string>
+  enabledFields: Set<string>,
+  dirtyFieldIds?: Set<string>
 ): CharacterPatchUpdate[] {
-  const cardsMap = new Map<string, { name: string; patch: Record<string, any>; altGreetings: string[] }>()
+  // dirtyFieldIds omitted = everything dirty (legacy callers); alt greetings are
+  // accumulated in field order and sent as a whole array when any changed
+  const isDirty = (id: string) => !dirtyFieldIds || dirtyFieldIds.has(id)
+  const cardsMap = new Map<string, { name: string; patch: Record<string, any>; altGreetings: string[]; altDirty: boolean }>()
 
   fields.forEach((f) => {
+    const dirty = isDirty(f.id)
     if (!cardsMap.has(f.characterId)) {
       cardsMap.set(f.characterId, {
         name: f.characterName,
         patch: {},
         altGreetings: [],
+        altDirty: false,
       })
     }
     const cardData = cardsMap.get(f.characterId)!
 
     if (f.key === 'alternate_greetings') {
       cardData.altGreetings.push(f.value)
-    } else {
+      if (dirty) cardData.altDirty = true
+    } else if (dirty) {
       cardData.patch[f.key] = f.value
     }
   })
 
   const updates: CharacterPatchUpdate[] = []
   cardsMap.forEach((data, id) => {
-    if (enabledFields.has('alternate_greetings')) {
+    const sendAlt = enabledFields.has('alternate_greetings') && data.altDirty
+    if (Object.keys(data.patch).length === 0 && !sendAlt) return // zero dirty fields → card excluded
+    if (sendAlt) {
       data.patch.alternate_greetings = data.altGreetings
     }
     updates.push({
